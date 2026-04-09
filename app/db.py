@@ -1,17 +1,52 @@
 from __future__ import annotations
 
+import socket
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import pandas as pd
 import psycopg2
 from psycopg2.extras import Json
+
+
+def _ipv4_for_host(host: str, port: int) -> str | None:
+    """IPv4-адрес для подключения (обход IPv6-only DNS там, где egress по v6 не работает)."""
+    try:
+        infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+    except OSError:
+        return None
+    if not infos:
+        return None
+    return infos[0][4][0]
 
 TABLE = "master_data"
 AUDIT_TABLE = "audit_log"
 
 
 def connect(dsn: str) -> psycopg2.extensions.connection:
-    return psycopg2.connect(dsn)
+    dsn = dsn.strip()
+    if not dsn:
+        return psycopg2.connect(dsn)
+    low = dsn.lower()
+    if not low.startswith("postgresql://") and not low.startswith("postgres://"):
+        return psycopg2.connect(dsn)
+
+    parsed = urlparse(dsn)
+    host = parsed.hostname
+    if not host:
+        return psycopg2.connect(dsn)
+
+    q = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if q.get("hostaddr"):
+        return psycopg2.connect(dsn)
+
+    port = parsed.port or 5432
+    ipv4 = _ipv4_for_host(host, port)
+    if ipv4 is None:
+        return psycopg2.connect(dsn)
+
+    q["hostaddr"] = ipv4
+    return psycopg2.connect(urlunparse(parsed._replace(query=urlencode(q))))
 
 
 def init_db(conn: psycopg2.extensions.connection) -> None:
