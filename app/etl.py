@@ -121,10 +121,29 @@ def _extract_meta_lines_from_excel_bytes(data: bytes) -> tuple[str | None, str |
     return _scan_meta_from_raw_header(raw)
 
 
+def _read_xls_raw(source: Path | BytesIO) -> pd.DataFrame:
+    """
+    Сырой лист .xls (header=None). Сначала calamine (python-calamine), затем xlrd —
+    чтобы не зависеть от одного движка и типичных сбоев установки.
+    """
+    last: Exception | None = None
+    for engine in ("calamine", "xlrd"):
+        try:
+            if isinstance(source, Path):
+                return pd.read_excel(source, engine=engine, header=None)
+            source.seek(0)
+            return pd.read_excel(source, engine=engine, header=None)
+        except Exception as e:
+            last = e
+            continue
+    assert last is not None
+    raise last
+
+
 def _read_excel_safe(path: Path) -> pd.DataFrame | None:
     try:
         if path.suffix.lower() == ".xls":
-            raw = pd.read_excel(path, engine="xlrd", header=None)
+            raw = _read_xls_raw(path)
             return _parse_legacy_znom_xls(raw)
         return pd.read_excel(path, engine="openpyxl")
     except Exception:
@@ -136,7 +155,7 @@ def read_excel_bytes(data: bytes, name: str) -> pd.DataFrame | None:
     suffix = Path(name).suffix.lower()
     try:
         if suffix == ".xls":
-            raw = pd.read_excel(BytesIO(data), engine="xlrd", header=None)
+            raw = _read_xls_raw(BytesIO(data))
             return _parse_legacy_znom_xls(raw)
         return pd.read_excel(BytesIO(data), engine="openpyxl")
     except Exception:
@@ -309,7 +328,7 @@ def load_reestr_upload(data: bytes, name: str) -> EtlResult:
     suffix = Path(name).suffix.lower()
     if suffix == ".xls":
         try:
-            raw = pd.read_excel(BytesIO(data), engine="xlrd", header=None)
+            raw = _read_xls_raw(BytesIO(data))
             df = _parse_legacy_reestr_xls(raw)
         except Exception:
             return EtlResult(pd.DataFrame(), 1, 1, [f"REESTR: skip {name} (cannot read)"])
@@ -333,7 +352,7 @@ def load_latest_reestr(folder: Path, patterns: list[str]) -> EtlResult:
     if df is None:
         return EtlResult(pd.DataFrame(), 1, 1, [f"REESTR: skip {latest.name} (cannot read)"])
     if latest.suffix.lower() == ".xls":
-        raw = pd.read_excel(latest, engine="xlrd", header=None)
+        raw = _read_xls_raw(latest)
         df = _parse_legacy_reestr_xls(raw)
     df["Source.Name"] = latest.name
     return EtlResult(df, 1, 0, errors)

@@ -1,6 +1,7 @@
 streamlit
-pandas
+pandas>=2.2
 openpyxl
+python-calamine
 xlrd
 python-dateutil
 streamlit-aggrid
