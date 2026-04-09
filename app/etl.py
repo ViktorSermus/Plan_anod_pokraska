@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import pandas as pd
 
@@ -140,10 +141,148 @@ def _read_xls_raw(source: Path | BytesIO) -> pd.DataFrame:
     raise last
 
 
+def _decode_web_bytes(data: bytes) -> str | None:
+    if not data:
+        return None
+    if data[:3] == b"\xef\xbb\xbf":
+        return data.decode("utf-8-sig", errors="replace")
+    if len(data) >= 2 and data[:2] == b"\xff\xfe":
+        return data.decode("utf-16-le", errors="replace")
+    if len(data) >= 2 and data[:2] == b"\xfe\xff":
+        return data.decode("utf-16-be", errors="replace")
+    for enc in ("utf-8", "cp1251", "windows-1251", "latin-1"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("latin-1", errors="replace")
+
+
+def _pick_best_raw_table(dfs: list[pd.DataFrame]) -> pd.DataFrame | None:
+    if not dfs:
+        return None
+    scored: list[tuple[int, pd.DataFrame]] = []
+    for d in dfs:
+        if d is None or d.empty:
+            continue
+        flat = " ".join(str(x) for x in d.values.ravel().tolist()).lower()
+        score = min(d.shape[0] * d.shape[1], 8000)
+        if "наименование" in flat:
+            score += 500
+        if "кол" in flat:
+            score += 50
+        scored.append((score, d))
+    if not scored:
+        return None
+    scored.sort(key=lambda x: -x[0])
+    return scored[0][1]
+
+
+def _read_html_tables_as_raw(data: bytes) -> pd.DataFrame:
+    text = _decode_web_bytes(data)
+    if text is None:
+        raise ValueError("empty")
+    last: Exception | None = None
+    for flavor in ("lxml", "html5lib", None):
+        try:
+            kwargs: dict = {"header": None}
+            if flavor:
+                kwargs["flavor"] = flavor
+            dfs = pd.read_html(StringIO(text), **kwargs)
+        except Exception as e:
+            last = e
+            continue
+        best = _pick_best_raw_table(dfs)
+        if best is not None and not best.empty:
+            return best
+    assert last is not None
+    raise last
+
+
+def _try_read_excel2003_xml_as_raw(data: bytes) -> pd.DataFrame | None:
+    head = data[:512].lstrip()
+    if not head.startswith(b"<?xml"):
+        return None
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError:
+        return None
+    ns = "urn:schemas-microsoft-com:office:spreadsheet"
+    q = lambda t: f"{{{ns}}}{t}"
+    rows_el = root.findall(f".//{q('Row')}")
+    if not rows_el:
+        return None
+    grid: list[list[object]] = []
+    for row in rows_el:
+        cells = row.findall(q("Cell"))
+        if not cells:
+            grid.append([])
+            continue
+        cols: dict[int, object] = {}
+        next_col = 1
+        for cell in cells:
+            for ak, av in cell.attrib.items():
+                if ak == "Index" or ak.endswith("}Index"):
+                    next_col = int(av)
+                    break
+            data_el = cell.find(q("Data"))
+            val: object = ""
+            if data_el is not None:
+                val = data_el.text if data_el.text is not None else ""
+            cols[next_col] = val
+            next_col += 1
+        if not cols:
+            grid.append([])
+            continue
+        max_c = max(cols.keys())
+        row_list: list[object] = [""] * max_c
+        for i, v in cols.items():
+            row_list[i - 1] = v
+        grid.append(row_list)
+    if not grid:
+        return None
+    w = max(len(r) for r in grid)
+    for r in grid:
+        while len(r) < w:
+            r.append("")
+    return pd.DataFrame(grid)
+
+
+def _read_legacy_excel_bytes_as_raw(data: bytes) -> pd.DataFrame:
+    """
+    Содержимое с расширением .xls: настоящий BIFF, либо xlsx под видом .xls,
+    HTML-таблица, либо XML Spreadsheet 2003 — типичные случаи «не читается» calamine/xlrd.
+    """
+    if not data:
+        raise ValueError("empty file")
+    if data[:2] == b"PK":
+        return pd.read_excel(BytesIO(data), engine="openpyxl", header=None)
+    if data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        return _read_xls_raw(BytesIO(data))
+    sample = data[: min(len(data), 65536)]
+    low = sample.lower()
+    if b"<table" in low or b"<html" in sample[:4000].lower() or b"<!doctype html" in low[:2000]:
+        return _read_html_tables_as_raw(data)
+    head = data[:4096].lstrip()
+    if head.startswith(b"<?xml"):
+        xml_df = _try_read_excel2003_xml_as_raw(data)
+        if xml_df is not None and not xml_df.empty:
+            return xml_df
+    try:
+        return _read_xls_raw(BytesIO(data))
+    except Exception:
+        pass
+    try:
+        return pd.read_excel(BytesIO(data), engine="openpyxl", header=None)
+    except Exception:
+        pass
+    return _read_html_tables_as_raw(data)
+
+
 def _read_excel_safe(path: Path) -> pd.DataFrame | None:
     try:
         if path.suffix.lower() == ".xls":
-            raw = _read_xls_raw(path)
+            raw = _read_legacy_excel_bytes_as_raw(path.read_bytes())
             return _parse_legacy_znom_xls(raw)
         return pd.read_excel(path, engine="openpyxl")
     except Exception:
@@ -155,7 +294,7 @@ def read_excel_bytes(data: bytes, name: str) -> pd.DataFrame | None:
     suffix = Path(name).suffix.lower()
     try:
         if suffix == ".xls":
-            raw = _read_xls_raw(BytesIO(data))
+            raw = _read_legacy_excel_bytes_as_raw(data)
             return _parse_legacy_znom_xls(raw)
         return pd.read_excel(BytesIO(data), engine="openpyxl")
     except Exception:
@@ -328,7 +467,7 @@ def load_reestr_upload(data: bytes, name: str) -> EtlResult:
     suffix = Path(name).suffix.lower()
     if suffix == ".xls":
         try:
-            raw = _read_xls_raw(BytesIO(data))
+            raw = _read_legacy_excel_bytes_as_raw(data)
             df = _parse_legacy_reestr_xls(raw)
         except Exception:
             return EtlResult(pd.DataFrame(), 1, 1, [f"REESTR: skip {name} (cannot read)"])
@@ -348,12 +487,16 @@ def load_latest_reestr(folder: Path, patterns: list[str]) -> EtlResult:
         return EtlResult(pd.DataFrame(), 0, 0, errors)
 
     latest = max(files, key=lambda p: p.stat().st_mtime)
-    df = _read_excel_safe(latest)
-    if df is None:
-        return EtlResult(pd.DataFrame(), 1, 1, [f"REESTR: skip {latest.name} (cannot read)"])
     if latest.suffix.lower() == ".xls":
-        raw = _read_xls_raw(latest)
-        df = _parse_legacy_reestr_xls(raw)
+        try:
+            raw = _read_legacy_excel_bytes_as_raw(latest.read_bytes())
+            df = _parse_legacy_reestr_xls(raw)
+        except Exception:
+            return EtlResult(pd.DataFrame(), 1, 1, [f"REESTR: skip {latest.name} (cannot read)"])
+    else:
+        df = _read_excel_safe(latest)
+        if df is None:
+            return EtlResult(pd.DataFrame(), 1, 1, [f"REESTR: skip {latest.name} (cannot read)"])
     df["Source.Name"] = latest.name
     return EtlResult(df, 1, 0, errors)
 
