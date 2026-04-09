@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ответы на вопросы IT: публикация приложения</title>
+  <style>
+    :root {
+      --text: #1a1a1a;
+      --muted: #5c5c5c;
+      --border: #e0e0e0;
+      --accent: #1565c0;
+      --bg: #fafafa;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      line-height: 1.55;
+      color: var(--text);
+      max-width: 52rem;
+      margin: 0 auto;
+      padding: 2rem 1.25rem 3rem;
+      background: var(--bg);
+    }
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin: 0 0 0.5rem;
+      line-height: 1.3;
+    }
+    .meta {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-bottom: 2rem;
+    }
+    h2 {
+      font-size: 1.15rem;
+      font-weight: 600;
+      margin: 2rem 0 0.75rem;
+      color: var(--accent);
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.35rem;
+    }
+    h3 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin: 1.25rem 0 0.5rem;
+    }
+    p { margin: 0.65rem 0; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+      margin: 1rem 0;
+      background: #fff;
+      border: 1px solid var(--border);
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.5rem 0.65rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #f0f4f8;
+      font-weight: 600;
+    }
+    .one-liner {
+      background: #fff;
+      border-left: 4px solid var(--accent);
+      padding: 0.65rem 1rem;
+      margin: 1rem 0;
+      font-size: 0.95rem;
+    }
+    .summary-table th:first-child { width: 2.5rem; }
+    ul { margin: 0.5rem 0 0.75rem 1.25rem; padding: 0; }
+    li { margin: 0.35rem 0; }
+    @media print {
+      body { background: #fff; padding: 1rem; }
+      h2 { page-break-after: avoid; }
+      table { page-break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Ответы на вопросы IT: публикация приложения для группы лиц компании</h1>
+  <p class="meta">Формулировки для передачи IT и краткие пояснения для разработчика. Контекст: веб-приложение на Python (сейчас Streamlit), данные по UNC, внутренняя сеть.</p>
+
+  <h2>1. Авторизация через Active Directory, контроллер 192.168.10.16</h2>
+  <p><strong>Суть для IT:</strong> приложение должно проверять логин/пароль пользователя в AD (или использовать уже установленную сессию Windows), используя этот DC как точку LDAP/LDAPS.</p>
+
+  <h3>Типичные варианты</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Подход</th>
+        <th>Когда уместно</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>LDAP bind</strong></td>
+        <td>Пользователь вводит логин/пароль в веб-форме; сервер выполняет bind к AD по LDAP/LDAPS к 192.168.10.16 (или к FQDN DC).</td>
+      </tr>
+      <tr>
+        <td><strong>Kerberos / SSO (IIS + Windows Auth)</strong></td>
+        <td>Пользователи в домене, браузер на ПК в той же сети — можно без ввода пароля в приложении, если стоит reverse proxy с Windows Integrated Authentication.</td>
+      </tr>
+      <tr>
+        <td><strong>NTLM через IIS</strong></td>
+        <td>Аналогично, часто проще на Windows Server.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p><strong>Что уточнить у IT:</strong> FQDN домена, базовый DN для поиска (<code>DC=...</code>), использовать ли LDAPS (порт 636) и есть ли корпоративный CA; разрешён ли доступ с сервера приложений к DC по нужным портам.</p>
+
+  <p class="one-liner"><strong>Ответ одной фразой:</strong> «Да, авторизация через AD с этим DC технически стандартна; нужны параметры LDAP/LDAPS и политика: форма логина в приложении или SSO через IIS/прокси.»</p>
+
+  <h2>2. Авторизация через группу AD</h2>
+  <p><strong>Суть:</strong> после успешной проверки пользователя нужно разрешить доступ только членам определённой группы (например <code>CN=Plan_anod_Users,...</code>).</p>
+  <p><strong>Как делается:</strong> после bind или при чтении учётной записи проверяется членство: атрибут <code>memberOf</code> или tokenGroups (в том числе вложенные группы), либо проверка «пользователь входит в группу X» через LDAP.</p>
+  <p><strong>Что зафиксировать с IT:</strong> точный DN или имя группы, нужны ли вложенные группы, и что делать с пользователями не из группы (403, редирект, сообщение).</p>
+
+  <p class="one-liner"><strong>Ответ одной фразой:</strong> «Да, ограничение по группе AD — обычная практика; нужен идентификатор группы и правила для вложенных групп.»</p>
+
+  <h2>3. Чтение файлов по UNC-путям</h2>
+  <p><strong>Суть:</strong> данные на шарах вида <code>\\server\share\...</code>. Процесс Python на сервере приложений должен видеть эти пути при наличии прав.</p>
+  <ul>
+    <li>Служба/процесс — под учётной записью домена с правами на эти шары (часто одна service account).</li>
+    <li>Сеть: сервер приложений должен доходить до файловых серверов (DNS, файрвол, SMB).</li>
+    <li>Если по политике каждый пользователь читает только «свои» файлы под своей учёткой — сложнее: impersonation после AD-входа или общая модель ACL на шаре.</li>
+  </ul>
+
+  <p class="one-liner"><strong>Ответ одной фразой:</strong> «Чтение по UNC поддерживается; нужно согласовать учётную запись службы (или impersonation) и сетевой доступ SMB с сервера приложений к шарам.»</p>
+
+  <h2>4. Размещение UI на веб-сервере Flask</h2>
+  <p><strong>Важно:</strong> продукт сейчас реализован на <strong>Streamlit</strong>, а не на Flask. Flask — другой фреймворк; «перенести UI на Flask» означает по сути переписать интерфейс или строить гибрид.</p>
+  <p><strong>Что ответить IT:</strong></p>
+  <ol>
+    <li>Если формулировка общая («веб-интерфейс на сервере компании»): UI — веб-приложение на Python; сейчас <strong>Streamlit</strong>. Его можно опубликовать за IIS / reverse proxy на том же Windows Server — с точки зрения безопасности и URL это полноценное веб-приложение.</li>
+    <li>Если IT принципиально требует именно Flask: потребуется отдельная доработка (миграция UI или фиксация в архитектуре «Python web app (Streamlit) за IIS»).</li>
+    <li>Компромисс: IIS как reverse proxy + Streamlit на localhost; авторизация на IIS (Windows Auth) или в приложении (LDAP).</li>
+  </ol>
+
+  <p class="one-liner"><strong>Ответ одной фразой:</strong> «Сейчас стек — Streamlit, не Flask; публикация как корпоративного веб-приложения на Windows Server возможна через IIS/прокси; переход на Flask — отдельный объём работ, если это обязательное требование.»</p>
+
+  <h2>5. Операционная система Windows Server 2019</h2>
+  <p>Размещение на Windows Server 2019 — нормальная схема для внутренних сервисов.</p>
+  <ul>
+    <li>Python в изолированном окружении.</li>
+    <li>Запуск Streamlit как службы Windows (NSSM, собственная служба — по политике IT).</li>
+    <li>Перед приложением — IIS с ARR / URL Rewrite как reverse proxy, HTTPS, при необходимости Windows Authentication.</li>
+    <li>Логи, резервное копирование БД (SQLite на диске сервера или перенос на SQL Server — по решению компании).</li>
+  </ul>
+
+  <p class="one-liner"><strong>Ответ одной фразой:</strong> «Windows Server 2019 подходит; рекомендуется IIS перед приложением, HTTPS, служба под доменной УЗ с доступом к UNC и AD.»</p>
+
+  <h2>Сводная таблица для диалога с IT</h2>
+  <table class="summary-table">
+    <thead>
+      <tr>
+        <th>№</th>
+        <th>Вопрос IT</th>
+        <th>Краткий ответ</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td>AD, DC 192.168.10.16</td>
+        <td>Да, LDAP/LDAPS или SSO через IIS; нужны параметры домена и политика портов.</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>Ограничение по группе AD</td>
+        <td>Да, после входа — проверка членства в указанной группе; нужен DN/имя группы.</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>UNC</td>
+        <td>Да, при service account или impersonation и сетевом доступе SMB.</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td>Flask</td>
+        <td>Сейчас Streamlit; уточнить: обязателен ли Flask или достаточно «веб на IIS».</td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td>Windows Server 2019</td>
+        <td>Подходит; IIS + служба Python + AD/UNC — стандартная схема.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p style="color: var(--muted); font-size: 0.9rem; margin-top: 2rem;">При необходимости можно сузить сценарий: только LDAP-форма или только IIS + Windows Authentication — в зависимости от политики компании.</p>
+
+</body>
+</html>

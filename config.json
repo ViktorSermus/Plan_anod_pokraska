@@ -1,0 +1,11 @@
+{
+  "znom_dir": "ZNOM",
+  "reestr_dir": "Reestr_ZNOM",
+  "db_path": "data/app.db",
+  "archive_missing_as_inactive": true,
+  "file_patterns": [
+    "*.xlsx",
+    "*.xlsm",
+    "*.xls"
+  ]
+}
