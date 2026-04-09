@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import re
 import socket
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse, urlunparse
 
 import pandas as pd
 import psycopg2
 from psycopg2.extras import Json
+
+# Прямой хост Supabase по умолчанию только IPv6; для IPv4 нужен Supavisor session pooler.
+_DIRECT_SUPABASE_DB = re.compile(r"^db\.([^.]+)\.supabase\.co$", re.IGNORECASE)
 
 
 def _ipv4_for_host(host: str, port: int) -> str | None:
@@ -19,11 +23,33 @@ def _ipv4_for_host(host: str, port: int) -> str | None:
         return None
     return infos[0][4][0]
 
+
+def _session_pooler_dsn_from_direct(parsed, region: str) -> str:
+    """Session pooler (порт 5432), IPv4-friendly. Документация Supabase: Connect → Session pooler."""
+    host = parsed.hostname or ""
+    m = _DIRECT_SUPABASE_DB.match(host)
+    if not m:
+        raise ValueError("ожидался хост db.<ref>.supabase.co")
+    ref = m.group(1)
+    region = region.strip()
+    if not region:
+        raise ValueError("пустой регион pooler")
+    pool_host = f"aws-0-{region}.pooler.supabase.com"
+    user = f"postgres.{ref}"
+    password = unquote(parsed.password) if parsed.password else ""
+    path = parsed.path if parsed.path else "/postgres"
+    q = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if "sslmode" not in q:
+        q["sslmode"] = "require"
+    netloc = f"{quote(user, safe='')}:{quote(password, safe='')}@{pool_host}:5432"
+    return urlunparse((parsed.scheme, netloc, path, "", urlencode(q), ""))
+
+
 TABLE = "master_data"
 AUDIT_TABLE = "audit_log"
 
 
-def connect(dsn: str) -> psycopg2.extensions.connection:
+def connect(dsn: str, *, supabase_pooler_region: str | None = None) -> psycopg2.extensions.connection:
     dsn = dsn.strip()
     if not dsn:
         return psycopg2.connect(dsn)
@@ -40,10 +66,30 @@ def connect(dsn: str) -> psycopg2.extensions.connection:
     if q.get("hostaddr"):
         return psycopg2.connect(dsn)
 
+    if _DIRECT_SUPABASE_DB.match(host):
+        reg = (supabase_pooler_region or "").strip()
+        if reg:
+            dsn = _session_pooler_dsn_from_direct(parsed, reg)
+            parsed = urlparse(dsn)
+            host = parsed.hostname or ""
+            q = dict(parse_qsl(parsed.query, keep_blank_values=True))
+            if q.get("hostaddr"):
+                return psycopg2.connect(urlunparse(parsed))
+        else:
+            port = parsed.port or 5432
+            if _ipv4_for_host(host, port) is None:
+                raise RuntimeError(
+                    "Прямое подключение db.*.supabase.co сейчас только по IPv6, а среда (Streamlit Cloud и др.) "
+                    "не может установить такое соединение. Добавьте в Secrets ключ "
+                    "SUPABASE_POOLER_REGION — регион проекта (например eu-central-1), его видно в "
+                    "Supabase → Project Settings → General → Region. Либо замените DATABASE_URL на строку "
+                    "«Session mode» / «Session pooler» из Dashboard → Connect."
+                )
+
     port = parsed.port or 5432
     ipv4 = _ipv4_for_host(host, port)
     if ipv4 is None:
-        return psycopg2.connect(dsn)
+        return psycopg2.connect(urlunparse(parsed._replace(query=urlencode(q))))
 
     q["hostaddr"] = ipv4
     return psycopg2.connect(urlunparse(parsed._replace(query=urlencode(q))))

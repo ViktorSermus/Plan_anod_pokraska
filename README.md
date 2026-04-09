@@ -23,6 +23,7 @@
 | Ключ | Назначение |
 |------|------------|
 | `DATABASE_URL` | Строка подключения Postgres (из Supabase → Connect / Database) |
+| `SUPABASE_POOLER_REGION` | Опционально: регион AWS проекта (например `eu-central-1`), если `DATABASE_URL` указывает на **прямой** хост `db.*.supabase.co` и приложение крутится там, где нет IPv6 (например Streamlit Cloud). Либо замените `DATABASE_URL` на строку **Session pooler** из Connect — тогда регион не нужен |
 | `SUPABASE_URL` | URL проекта (`https://xxx.supabase.co`) |
 | `SUPABASE_ANON_KEY` | anon / public API key |
 | `APP_BASE_URL` | Публичный URL приложения: локально `http://localhost:8501`, в облаке — URL Streamlit Cloud |

@@ -154,6 +154,7 @@ with h3:
                     archive_missing=settings.archive_missing_as_inactive,
                     actor_user_id=user.get("id"),
                     actor_email=user.get("email") or None,
+                    supabase_pooler_region=settings.supabase_pooler_region,
                 )
                 st.success(
                     f"Готово. ZNOM: {stats.znom_files_read} файлов ({stats.znom_files_failed} ошибок), "
@@ -174,7 +175,11 @@ with row_filters[1]:
         st.session_state["grid_reset_counter"] = st.session_state.get("grid_reset_counter", 0) + 1
         st.rerun()
 
-df = get_grid_data(settings.database_url, include_inactive=include_inactive)
+df = get_grid_data(
+    settings.database_url,
+    include_inactive=include_inactive,
+    supabase_pooler_region=settings.supabase_pooler_region,
+)
 
 if df.empty:
     st.info("База пуста. Загрузите файлы заявок (и при необходимости реестр), затем нажмите «Загрузить в базу».")
@@ -850,7 +855,10 @@ if not edited_rows.empty:
             new_values[k] = (new_exp, new_corr, new_note)
 
     if changed_keys:
-        conn = connect(settings.database_url)
+        conn = connect(
+            settings.database_url,
+            supabase_pooler_region=settings.supabase_pooler_region,
+        )
         try:
             init_db(conn)
             for k in changed_keys:

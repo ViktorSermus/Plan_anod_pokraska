@@ -7,6 +7,8 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class AppSettings:
     database_url: str
+    """Регион AWS из Supabase (eu-central-1 и т.д.) — для Session pooler при DATABASE_URL на db.*.supabase.co."""
+    supabase_pooler_region: str | None
     supabase_url: str
     supabase_anon_key: str
     """Полный URL приложения (например https://xxx.streamlit.app) — для redirect OAuth."""
@@ -16,6 +18,8 @@ class AppSettings:
 
 def load_app_settings() -> AppSettings:
     database_url = _get_secret("DATABASE_URL")
+    _pooler_reg = (_get_secret("SUPABASE_POOLER_REGION") or "").strip()
+    supabase_pooler_region = _pooler_reg or None
     supabase_url = _get_secret("SUPABASE_URL")
     supabase_anon_key = _get_secret("SUPABASE_ANON_KEY")
     app_base_url = (_get_secret("APP_BASE_URL") or os.environ.get("APP_BASE_URL") or "http://localhost:8501").rstrip("/")
@@ -42,6 +46,7 @@ def load_app_settings() -> AppSettings:
 
     return AppSettings(
         database_url=database_url.strip(),
+        supabase_pooler_region=supabase_pooler_region,
         supabase_url=supabase_url.strip(),
         supabase_anon_key=supabase_anon_key.strip(),
         app_base_url=app_base_url,

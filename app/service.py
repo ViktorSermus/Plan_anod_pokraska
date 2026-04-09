@@ -28,6 +28,7 @@ def refresh_from_uploads(
     archive_missing: bool = True,
     actor_user_id: str | None = None,
     actor_email: str | None = None,
+    supabase_pooler_region: str | None = None,
 ) -> RefreshStats:
     znom = load_znom_uploads(znom_parts)
     if reestr:
@@ -37,7 +38,7 @@ def refresh_from_uploads(
 
     master = transform_master(znom.dataframe, reestr_res.dataframe)
 
-    conn = connect(database_url)
+    conn = connect(database_url, supabase_pooler_region=supabase_pooler_region)
     try:
         init_db(conn)
         up = upsert_master(conn, master, archive_missing=archive_missing)
@@ -71,8 +72,13 @@ def refresh_from_uploads(
     return stats
 
 
-def get_grid_data(database_url: str, include_inactive: bool) -> pd.DataFrame:
-    conn = connect(database_url)
+def get_grid_data(
+    database_url: str,
+    include_inactive: bool,
+    *,
+    supabase_pooler_region: str | None = None,
+) -> pd.DataFrame:
+    conn = connect(database_url, supabase_pooler_region=supabase_pooler_region)
     try:
         init_db(conn)
         return fetch_all(conn, include_inactive=include_inactive)
