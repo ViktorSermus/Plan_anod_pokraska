@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.config import AppConfig
-from app.db import connect, fetch_all, init_db, upsert_master
-from app.etl import load_latest_reestr, load_znom_folder, transform_master
+import pandas as pd
+
+from app.db import connect, fetch_all, init_db, log_etl_import, upsert_master
+from app.etl import EtlResult, load_reestr_upload, load_znom_uploads, transform_master
 
 
 @dataclass
@@ -19,32 +20,59 @@ class RefreshStats:
     errors: list[str]
 
 
-def refresh_data(cfg: AppConfig) -> RefreshStats:
-    znom = load_znom_folder(cfg.znom_dir, cfg.file_patterns)
-    reestr = load_latest_reestr(cfg.reestr_dir, cfg.file_patterns)
-    master = transform_master(znom.dataframe, reestr.dataframe)
+def refresh_from_uploads(
+    database_url: str,
+    znom_parts: list[tuple[bytes, str]],
+    reestr: tuple[bytes, str] | None,
+    *,
+    archive_missing: bool = True,
+    actor_user_id: str | None = None,
+    actor_email: str | None = None,
+) -> RefreshStats:
+    znom = load_znom_uploads(znom_parts)
+    if reestr:
+        reestr_res = load_reestr_upload(reestr[0], reestr[1])
+    else:
+        reestr_res = EtlResult(pd.DataFrame(), 0, 0, [])
 
-    conn = connect(cfg.db_path)
+    master = transform_master(znom.dataframe, reestr_res.dataframe)
+
+    conn = connect(database_url)
     try:
         init_db(conn)
-        up = upsert_master(conn, master, archive_missing=cfg.archive_missing_as_inactive)
+        up = upsert_master(conn, master, archive_missing=archive_missing)
+        stats = RefreshStats(
+            znom_files_read=znom.files_read,
+            znom_files_failed=znom.files_failed,
+            reestr_files_read=reestr_res.files_read,
+            reestr_files_failed=reestr_res.files_failed,
+            rows_added=up["added"],
+            rows_updated=up["updated"],
+            rows_archived=up["archived"],
+            errors=[*znom.errors, *reestr_res.errors],
+        )
+        log_etl_import(
+            conn,
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            stats={
+                "znom_files_read": stats.znom_files_read,
+                "znom_files_failed": stats.znom_files_failed,
+                "reestr_files_read": stats.reestr_files_read,
+                "reestr_files_failed": stats.reestr_files_failed,
+                "rows_added": stats.rows_added,
+                "rows_updated": stats.rows_updated,
+                "rows_archived": stats.rows_archived,
+            },
+        )
     finally:
         conn.close()
 
-    return RefreshStats(
-        znom_files_read=znom.files_read,
-        znom_files_failed=znom.files_failed,
-        reestr_files_read=reestr.files_read,
-        reestr_files_failed=reestr.files_failed,
-        rows_added=up["added"],
-        rows_updated=up["updated"],
-        rows_archived=up["archived"],
-        errors=[*znom.errors, *reestr.errors],
-    )
+    return stats
 
 
-def get_grid_data(cfg: AppConfig, include_inactive: bool):
-    conn = connect(cfg.db_path)
+def get_grid_data(database_url: str, include_inactive: bool) -> pd.DataFrame:
+    conn = connect(database_url)
     try:
         init_db(conn)
         return fetch_all(conn, include_inactive=include_inactive)

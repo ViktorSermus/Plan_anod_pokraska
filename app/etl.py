@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
@@ -86,12 +87,8 @@ def build_business_key(df: pd.DataFrame) -> pd.Series:
     return parts.map(lambda x: hashlib.sha1(x.encode("utf-8")).hexdigest())
 
 
-def _extract_meta_lines_from_excel_top(path: Path) -> tuple[str | None, str | None]:
-    """Строки вида «Услуга: …», «Автор: …» в верхней части листа (в т.ч. xlsx без legacy-парсера)."""
-    try:
-        raw = pd.read_excel(path, engine="openpyxl", header=None, nrows=40)
-    except Exception:
-        return None, None
+def _scan_meta_from_raw_header(raw: pd.DataFrame) -> tuple[str | None, str | None]:
+    """Строки вида «Услуга: …», «Автор: …» в верхней части листа (первые ~40 строк)."""
     service = None
     author = None
     for i in range(min(len(raw), 40)):
@@ -107,12 +104,41 @@ def _extract_meta_lines_from_excel_top(path: Path) -> tuple[str | None, str | No
     return service, author
 
 
+def _extract_meta_lines_from_excel_top(path: Path) -> tuple[str | None, str | None]:
+    """Строки вида «Услуга: …», «Автор: …» в верхней части листа (в т.ч. xlsx без legacy-парсера)."""
+    try:
+        raw = pd.read_excel(path, engine="openpyxl", header=None, nrows=40)
+    except Exception:
+        return None, None
+    return _scan_meta_from_raw_header(raw)
+
+
+def _extract_meta_lines_from_excel_bytes(data: bytes) -> tuple[str | None, str | None]:
+    try:
+        raw = pd.read_excel(BytesIO(data), engine="openpyxl", header=None, nrows=40)
+    except Exception:
+        return None, None
+    return _scan_meta_from_raw_header(raw)
+
+
 def _read_excel_safe(path: Path) -> pd.DataFrame | None:
     try:
         if path.suffix.lower() == ".xls":
             raw = pd.read_excel(path, engine="xlrd", header=None)
             return _parse_legacy_znom_xls(raw)
         return pd.read_excel(path, engine="openpyxl")
+    except Exception:
+        return None
+
+
+def read_excel_bytes(data: bytes, name: str) -> pd.DataFrame | None:
+    """Чтение Excel из памяти (загрузка в Streamlit). `name` — имя файла с расширением."""
+    suffix = Path(name).suffix.lower()
+    try:
+        if suffix == ".xls":
+            raw = pd.read_excel(BytesIO(data), engine="xlrd", header=None)
+            return _parse_legacy_znom_xls(raw)
+        return pd.read_excel(BytesIO(data), engine="openpyxl")
     except Exception:
         return None
 
@@ -240,6 +266,60 @@ def load_znom_folder(folder: Path, patterns: list[str]) -> EtlResult:
 
     out = pd.concat(frames, ignore_index=True)
     return EtlResult(out, len(files), failed, errors)
+
+
+def load_znom_uploads(items: list[tuple[bytes, str]]) -> EtlResult:
+    """Несколько файлов заявок (ZNOM), переданных как (bytes, имя_файла)."""
+    frames: list[pd.DataFrame] = []
+    errors: list[str] = []
+    failed = 0
+    if not items:
+        return EtlResult(pd.DataFrame(), 0, 0, errors)
+
+    for data, name in items:
+        df = read_excel_bytes(data, name)
+        if df is None:
+            failed += 1
+            errors.append(f"ZNOM: skip {name} (cannot read)")
+            continue
+        if not df.empty:
+            df = df.copy()
+            if "Услуга" not in df.columns:
+                df["Услуга"] = pd.NA
+            _svc_empty = df["Услуга"].isna().all()
+            if not _svc_empty:
+                _svc_empty = bool((df["Услуга"].astype(str).str.strip() == "").all())
+            if _svc_empty:
+                svc, _ = _extract_meta_lines_from_excel_bytes(data) if Path(name).suffix.lower() != ".xls" else (None, None)
+                if svc:
+                    df["Услуга"] = svc
+        df["Source.Name"] = name
+        frames.append(df)
+
+    if not frames:
+        return EtlResult(pd.DataFrame(), len(items), failed, errors)
+
+    out = pd.concat(frames, ignore_index=True)
+    return EtlResult(out, len(items), failed, errors)
+
+
+def load_reestr_upload(data: bytes, name: str) -> EtlResult:
+    """Один файл реестра готовности."""
+    errors: list[str] = []
+    suffix = Path(name).suffix.lower()
+    if suffix == ".xls":
+        try:
+            raw = pd.read_excel(BytesIO(data), engine="xlrd", header=None)
+            df = _parse_legacy_reestr_xls(raw)
+        except Exception:
+            return EtlResult(pd.DataFrame(), 1, 1, [f"REESTR: skip {name} (cannot read)"])
+    else:
+        df = read_excel_bytes(data, name)
+        if df is None:
+            return EtlResult(pd.DataFrame(), 1, 1, [f"REESTR: skip {name} (cannot read)"])
+    df = df.copy()
+    df["Source.Name"] = name
+    return EtlResult(df, 1, 0, errors)
 
 
 def load_latest_reestr(folder: Path, patterns: list[str]) -> EtlResult:

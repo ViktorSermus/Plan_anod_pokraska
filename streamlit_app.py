@@ -7,9 +7,17 @@ import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 
-from app.config import load_config
 from app.db import connect, init_db, set_export_fields
-from app.service import get_grid_data, refresh_data
+from app.service import get_grid_data, refresh_from_uploads
+from app.settings import load_app_settings
+from app.supabase_auth import (
+    build_supabase_client,
+    current_user,
+    logout,
+    process_oauth_redirect,
+    render_login_page,
+    restore_session,
+)
 from app.etl import build_business_key
 from app.status import add_status_column
 
@@ -94,33 +102,82 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-cfg = load_config("config.json")
+try:
+    settings = load_app_settings()
+except Exception as e:
+    st.error(str(e))
+    st.stop()
 
-h1, h2, h3 = st.columns([1.05, 1.75, 0.78])
+supabase = build_supabase_client(settings.supabase_url, settings.supabase_anon_key)
+if process_oauth_redirect(supabase):
+    st.stop()
+restore_session(supabase)
+user = current_user()
+if not user:
+    render_login_page(supabase, settings.app_base_url)
+    st.stop()
+
+with st.sidebar:
+    st.caption(user.get("email") or user.get("id") or "—")
+    if st.button("Выйти", use_container_width=True):
+        logout(supabase)
+
+h1, h2, h3 = st.columns([1.4, 1.4, 0.78])
 with h1:
-    if st.button("Обновить данные", type="primary", use_container_width=True):
-        stats = refresh_data(cfg)
-        st.success(
-            f"Готово. ZNOM: {stats.znom_files_read} файлов ({stats.znom_files_failed} ошибок), "
-            f"REESTR: {stats.reestr_files_read} файл ({stats.reestr_files_failed} ошибок). "
-            f"Строк: +{stats.rows_added}, обновлено {stats.rows_updated}, архив {stats.rows_archived}."
-        )
-        for e in stats.errors:
-            st.warning(e)
-
+    znom_uploads = st.file_uploader(
+        "Заявки (ZNOM), несколько файлов",
+        type=["xlsx", "xlsm", "xls"],
+        accept_multiple_files=True,
+        key="znom_upload",
+    )
 with h2:
-    include_inactive = st.checkbox("Показывать архивные (is_active=0)", value=False)
-
+    reestr_upload = st.file_uploader(
+        "Реестр готовности (один файл)",
+        type=["xlsx", "xlsm", "xls"],
+        accept_multiple_files=False,
+        key="reestr_upload",
+    )
 with h3:
+    st.write("")
+    st.write("")
+    if st.button("Загрузить в базу", type="primary", use_container_width=True):
+        if not znom_uploads:
+            st.warning("Выберите хотя бы один файл заявок.")
+        else:
+            parts = [(f.getvalue(), f.name) for f in znom_uploads]
+            reestr_tuple = (reestr_upload.getvalue(), reestr_upload.name) if reestr_upload else None
+            try:
+                stats = refresh_from_uploads(
+                    settings.database_url,
+                    parts,
+                    reestr_tuple,
+                    archive_missing=settings.archive_missing_as_inactive,
+                    actor_user_id=user.get("id"),
+                    actor_email=user.get("email") or None,
+                )
+                st.success(
+                    f"Готово. ZNOM: {stats.znom_files_read} файлов ({stats.znom_files_failed} ошибок), "
+                    f"REESTR: {stats.reestr_files_read} файл ({stats.reestr_files_failed} ошибок). "
+                    f"Строк: +{stats.rows_added}, обновлено {stats.rows_updated}, архив {stats.rows_archived}."
+                )
+                for e in stats.errors:
+                    st.warning(e)
+            except Exception as ex:
+                st.error(f"Ошибка импорта: {ex}")
+
+row_filters = st.columns([1.75, 0.78])
+with row_filters[0]:
+    include_inactive = st.checkbox("Показывать архивные (is_active=0)", value=False)
+with row_filters[1]:
     if st.button("Сбросить фильтры", type="secondary", use_container_width=True):
         st.session_state["pending_reset"] = True
         st.session_state["grid_reset_counter"] = st.session_state.get("grid_reset_counter", 0) + 1
         st.rerun()
 
-df = get_grid_data(cfg, include_inactive=include_inactive)
+df = get_grid_data(settings.database_url, include_inactive=include_inactive)
 
 if df.empty:
-    st.info("Данных нет. Нажмите 'Обновить данные'.")
+    st.info("База пуста. Загрузите файлы заявок (и при необходимости реестр), затем нажмите «Загрузить в базу».")
     st.stop()
 
 # ---- Диапазон дат по всему набору ----
@@ -793,12 +850,20 @@ if not edited_rows.empty:
             new_values[k] = (new_exp, new_corr, new_note)
 
     if changed_keys:
-        conn = connect(cfg.db_path)
+        conn = connect(settings.database_url)
         try:
             init_db(conn)
             for k in changed_keys:
                 exp_v, corr_v, note_v = new_values[k]
-                set_export_fields(conn, k, exp_v, corr_v, note_v)
+                set_export_fields(
+                    conn,
+                    k,
+                    exp_v,
+                    corr_v,
+                    note_v,
+                    actor_user_id=user.get("id"),
+                    actor_email=user.get("email") or None,
+                )
             # Update baseline after successful save.
             for k in changed_keys:
                 baseline[k] = new_values[k]

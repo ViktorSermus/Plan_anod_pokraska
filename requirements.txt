@@ -5,3 +5,5 @@ xlrd
 python-dateutil
 streamlit-aggrid
 reportlab
+psycopg2-binary
+supabase>=2.10.0,<3
