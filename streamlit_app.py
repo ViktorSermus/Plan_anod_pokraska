@@ -161,6 +161,11 @@ with h3:
                     f"REESTR: {stats.reestr_files_read} файл ({stats.reestr_files_failed} ошибок). "
                     f"Строк: +{stats.rows_added}, обновлено {stats.rows_updated}, архив {stats.rows_archived}."
                 )
+                # После импорта данные/колонки могут измениться; старое состояние грида иногда
+                # ломает отрисовку или скрывает все колонки.
+                st.session_state.pop("aggrid_columns_state", None)
+                st.session_state.pop("aggrid_grid_state", None)
+                st.session_state["grid_reset_counter"] = st.session_state.get("grid_reset_counter", 0) + 1
                 for e in stats.errors:
                     st.warning(e)
             except Exception as ex:
@@ -790,9 +795,6 @@ gb.configure_grid_options(getRowStyle=_row_style_js)
 gb.configure_grid_options(tooltipShowDelay=200)
 
 _grid_opts = gb.build()
-_ag_saved_gs = st.session_state.get("aggrid_grid_state")
-if isinstance(_ag_saved_gs, dict) and _ag_saved_gs:
-    _grid_opts["initialState"] = _ag_saved_gs
 
 grid_key = (
     f"grid_{st.session_state['grid_reset_counter']}_{date_from}_{date_to}"
@@ -802,7 +804,6 @@ grid_key = (
 grid_response = AgGrid(
     df_grid,
     gridOptions=_grid_opts,
-    columns_state=st.session_state.get("aggrid_columns_state"),
     update_mode=GridUpdateMode.MODEL_CHANGED,
     update_on=["cellValueChanged", "cellEditingStopped"],
     editable=True,
@@ -818,11 +819,6 @@ grid_response = AgGrid(
     server_sync_strategy="server_wins",
     allow_unsafe_jscode=True,
 )
-
-if grid_response.columns_state is not None:
-    st.session_state["aggrid_columns_state"] = grid_response.columns_state
-if grid_response.grid_state is not None:
-    st.session_state["aggrid_grid_state"] = grid_response.grid_state
 
 # Свойство .data — актуальные строки грида (в т.ч. после правок)
 _edited = grid_response.data
