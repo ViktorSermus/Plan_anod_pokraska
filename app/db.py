@@ -49,6 +49,17 @@ TABLE = "master_data"
 AUDIT_TABLE = "audit_log"
 
 
+def _normalize_note_value(value: Any) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    if s.lower() in {"nan", "none", "null"}:
+        return None
+    return s
+
+
 def connect(dsn: str, *, supabase_pooler_region: str | None = None) -> psycopg2.extensions.connection:
     dsn = dsn.strip()
     if not dsn:
@@ -175,7 +186,7 @@ def upsert_master(conn: psycopg2.extensions.connection, df: pd.DataFrame, archiv
 
     existing = pd.read_sql_query(f"SELECT business_key, exported, correction, note FROM {TABLE}", conn)
     existing_map = {
-        r["business_key"]: (r["exported"], r["correction"], r["note"]) for _, r in existing.iterrows()
+        r["business_key"]: (r["exported"], r["correction"], _normalize_note_value(r["note"])) for _, r in existing.iterrows()
     }
     incoming_keys = set(df["business_key"].tolist())
 
@@ -185,6 +196,7 @@ def upsert_master(conn: psycopg2.extensions.connection, df: pd.DataFrame, archiv
         for _, r in df.iterrows():
             ex_row = existing_map.get(r["business_key"], (None, None, None))
             exported, correction, note = ex_row
+            note = _normalize_note_value(note)
             if r["business_key"] in existing_map:
                 updated += 1
             else:
@@ -279,6 +291,7 @@ def set_export_fields(
     actor_user_id: str | None = None,
     actor_email: str | None = None,
 ) -> None:
+    note = _normalize_note_value(note)
     with conn.cursor() as cur:
         cur.execute(
             f"SELECT exported, correction, note FROM {TABLE} WHERE business_key = %s",
@@ -288,7 +301,7 @@ def set_export_fields(
         if not row:
             conn.rollback()
             return
-        old_exp, old_corr, old_note = row[0], row[1], row[2]
+        old_exp, old_corr, old_note = row[0], row[1], _normalize_note_value(row[2])
 
         cur.execute(
             f"""
@@ -334,8 +347,8 @@ def set_export_fields(
                 old_value=old_corr,
                 new_value=correction,
             )
-        on = (old_note or "") if old_note is not None else ""
-        nn = (note or "") if note is not None else ""
+        on = old_note or ""
+        nn = note or ""
         if on != nn:
             _append_audit(
                 conn,
@@ -358,8 +371,8 @@ def fetch_all(conn: psycopg2.extensions.connection, include_inactive: bool = Fal
     q += " ORDER BY date_request DESC NULLS LAST, request_no ASC"
     df = pd.read_sql_query(q, conn)
     if not df.empty and "note" in df.columns:
-        # NULL из БД → NaN в pandas; в Ag Grid это отображается как текст «NaN»
-        df["note"] = df["note"].fillna("")
+        # Приводим NULL/NaN/строковые артефакты вида "NaN" к пустой строке для корректного показа в гриде.
+        df["note"] = df["note"].map(_normalize_note_value).fillna("")
     return df
 
 

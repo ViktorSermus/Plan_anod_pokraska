@@ -499,7 +499,11 @@ note_col = "ПР."
 key_col = "_key"
 
 df_grid = grid.copy()
-df_grid[note_col] = df_grid[note_col].fillna("")
+df_grid[note_col] = (
+    df_grid[note_col]
+    .fillna("")
+    .replace(["NaN", "nan", "None", "none", "NULL", "null"], "")
+)
 df_grid[exported_col] = pd.to_numeric(df_grid[exported_col], errors="coerce")
 df_grid[corr_col] = pd.to_numeric(df_grid[corr_col], errors="coerce")
 
