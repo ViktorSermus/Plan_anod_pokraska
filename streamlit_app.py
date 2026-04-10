@@ -192,8 +192,25 @@ if df.empty:
     st.info("База пуста. Загрузите файлы заявок (и при необходимости реестр), затем нажмите «Загрузить в базу».")
     st.stop()
 
+
+def _parse_request_dates(series: pd.Series) -> pd.Series:
+    """Поддерживает ISO и старые текстовые даты вида ДД.ММ.ГГ/ДД.ММ.ГГГГ."""
+    s = series.astype("string").str.strip()
+    parsed = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+    dotted_mask = s.str.fullmatch(r"\d{1,2}\.\d{1,2}\.\d{2,4}", na=False)
+    if dotted_mask.any():
+        parsed.loc[dotted_mask] = pd.to_datetime(s.loc[dotted_mask], errors="coerce", dayfirst=True)
+    needs_generic = parsed.isna() & s.notna() & (s != "")
+    if needs_generic.any():
+        parsed.loc[needs_generic] = pd.to_datetime(s.loc[needs_generic], errors="coerce")
+    needs_dayfirst = parsed.isna() & s.notna() & (s != "")
+    if needs_dayfirst.any():
+        parsed.loc[needs_dayfirst] = pd.to_datetime(s.loc[needs_dayfirst], errors="coerce", dayfirst=True)
+    return parsed
+
+
 # ---- Диапазон дат по всему набору ----
-date_series_all = pd.to_datetime(df["date_request"], errors="coerce")
+date_series_all = _parse_request_dates(df["date_request"])
 min_date_all = date_series_all.min().date() if date_series_all.notna().any() else None
 max_date_all = date_series_all.max().date() if date_series_all.notna().any() else None
 
@@ -276,7 +293,7 @@ st.caption(
 _d0, _d1 = st.session_state["date_range"]
 _lo = max(min(_d0, _d1), min_date_all)
 _hi = min(max(_d0, _d1), max_date_all)
-_ds_all = pd.to_datetime(df["date_request"], errors="coerce")
+_ds_all = _parse_request_dates(df["date_request"])
 _mask_opts = _ds_all.notna() & (_ds_all >= pd.Timestamp(_lo)) & (_ds_all <= pd.Timestamp(_hi))
 df_for_opts = df.loc[_mask_opts].copy()
 
@@ -393,7 +410,7 @@ service_sel = {opt for opt in _real_service_opts if st.session_state.get(_fcb_ke
 
 # ---- Фильтрация ----
 df_filtered = df.copy()
-date_series = pd.to_datetime(df_filtered["date_request"], errors="coerce")
+date_series = _parse_request_dates(df_filtered["date_request"])
 start_dt = pd.to_datetime(date_from)
 end_dt = pd.to_datetime(date_to)
 mask = date_series.notna() & (date_series >= start_dt) & (date_series <= end_dt)
@@ -514,7 +531,7 @@ grid = grid.rename(
 )
 
 # Отображение даты как ДД.ММ.ГГГГ (например 24.11.2025)
-_dt = pd.to_datetime(grid["Дата"], errors="coerce")
+_dt = _parse_request_dates(grid["Дата"])
 grid["Дата"] = _dt.dt.strftime("%d.%m.%Y").where(_dt.notna(), "")
 
 # ---- AgGrid table with column-header filters ----
