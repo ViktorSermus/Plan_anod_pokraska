@@ -183,7 +183,7 @@ def _read_html_tables_as_raw(data: bytes) -> pd.DataFrame:
     if text is None:
         raise ValueError("empty")
     last: Exception | None = None
-    for flavor in ("lxml", "html5lib", None):
+    for flavor in ("lxml", None):
         try:
             kwargs: dict = {"header": None}
             if flavor:
@@ -251,7 +251,7 @@ def _try_read_excel2003_xml_as_raw(data: bytes) -> pd.DataFrame | None:
 def _read_legacy_excel_bytes_as_raw(data: bytes) -> pd.DataFrame:
     """
     Содержимое с расширением .xls: настоящий BIFF, либо xlsx под видом .xls,
-    HTML-таблица, либо XML Spreadsheet 2003 — типичные случаи «не читается» calamine/xlrd.
+    HTML-таблица, либо XML Spreadsheet 2003.
     """
     if not data:
         raise ValueError("empty file")
@@ -279,26 +279,46 @@ def _read_legacy_excel_bytes_as_raw(data: bytes) -> pd.DataFrame:
     return _read_html_tables_as_raw(data)
 
 
-def _read_excel_safe(path: Path) -> pd.DataFrame | None:
+def _format_read_error(exc: Exception) -> str:
+    msg = str(exc).strip().replace("\n", " ")
+    msg = re.sub(r"\s+", " ", msg)
+    if msg:
+        if len(msg) > 180:
+            msg = msg[:177] + "..."
+        return f"{exc.__class__.__name__}: {msg}"
+    return exc.__class__.__name__
+
+
+def _read_excel_safe_with_error(path: Path) -> tuple[pd.DataFrame | None, str | None]:
     try:
         if path.suffix.lower() == ".xls":
             raw = _read_legacy_excel_bytes_as_raw(path.read_bytes())
             return _parse_legacy_znom_xls(raw)
-        return pd.read_excel(path, engine="openpyxl")
-    except Exception:
-        return None
+        return pd.read_excel(path, engine="openpyxl"), None
+    except Exception as exc:
+        return None, _format_read_error(exc)
 
 
-def read_excel_bytes(data: bytes, name: str) -> pd.DataFrame | None:
+def _read_excel_safe(path: Path) -> pd.DataFrame | None:
+    df, _ = _read_excel_safe_with_error(path)
+    return df
+
+
+def read_excel_bytes_with_error(data: bytes, name: str) -> tuple[pd.DataFrame | None, str | None]:
     """Чтение Excel из памяти (загрузка в Streamlit). `name` — имя файла с расширением."""
     suffix = Path(name).suffix.lower()
     try:
         if suffix == ".xls":
             raw = _read_legacy_excel_bytes_as_raw(data)
             return _parse_legacy_znom_xls(raw)
-        return pd.read_excel(BytesIO(data), engine="openpyxl")
-    except Exception:
-        return None
+        return pd.read_excel(BytesIO(data), engine="openpyxl"), None
+    except Exception as exc:
+        return None, _format_read_error(exc)
+
+
+def read_excel_bytes(data: bytes, name: str) -> pd.DataFrame | None:
+    df, _ = read_excel_bytes_with_error(data, name)
+    return df
 
 
 def _parse_legacy_znom_xls(raw: pd.DataFrame) -> pd.DataFrame:
@@ -400,10 +420,11 @@ def load_znom_folder(folder: Path, patterns: list[str]) -> EtlResult:
     failed = 0
 
     for f in files:
-        df = _read_excel_safe(f)
+        df, err = _read_excel_safe_with_error(f)
         if df is None:
             failed += 1
-            errors.append(f"ZNOM: skip {f.name} (cannot read)")
+            details = f": {err}" if err else ""
+            errors.append(f"ZNOM: skip {f.name} (cannot read{details})")
             continue
         if not df.empty:
             df = df.copy()
@@ -435,10 +456,11 @@ def load_znom_uploads(items: list[tuple[bytes, str]]) -> EtlResult:
         return EtlResult(pd.DataFrame(), 0, 0, errors)
 
     for data, name in items:
-        df = read_excel_bytes(data, name)
+        df, err = read_excel_bytes_with_error(data, name)
         if df is None:
             failed += 1
-            errors.append(f"ZNOM: skip {name} (cannot read)")
+            details = f": {err}" if err else ""
+            errors.append(f"ZNOM: skip {name} (cannot read{details})")
             continue
         if not df.empty:
             df = df.copy()
@@ -469,12 +491,14 @@ def load_reestr_upload(data: bytes, name: str) -> EtlResult:
         try:
             raw = _read_legacy_excel_bytes_as_raw(data)
             df = _parse_legacy_reestr_xls(raw)
-        except Exception:
-            return EtlResult(pd.DataFrame(), 1, 1, [f"REESTR: skip {name} (cannot read)"])
+        except Exception as exc:
+            err = _format_read_error(exc)
+            return EtlResult(pd.DataFrame(), 1, 1, [f"REESTR: skip {name} (cannot read: {err})"])
     else:
-        df = read_excel_bytes(data, name)
+        df, err = read_excel_bytes_with_error(data, name)
         if df is None:
-            return EtlResult(pd.DataFrame(), 1, 1, [f"REESTR: skip {name} (cannot read)"])
+            details = f": {err}" if err else ""
+            return EtlResult(pd.DataFrame(), 1, 1, [f"REESTR: skip {name} (cannot read{details})"])
     df = df.copy()
     df["Source.Name"] = name
     return EtlResult(df, 1, 0, errors)
@@ -491,12 +515,14 @@ def load_latest_reestr(folder: Path, patterns: list[str]) -> EtlResult:
         try:
             raw = _read_legacy_excel_bytes_as_raw(latest.read_bytes())
             df = _parse_legacy_reestr_xls(raw)
-        except Exception:
-            return EtlResult(pd.DataFrame(), 1, 1, [f"REESTR: skip {latest.name} (cannot read)"])
+        except Exception as exc:
+            err = _format_read_error(exc)
+            return EtlResult(pd.DataFrame(), 1, 1, [f"REESTR: skip {latest.name} (cannot read: {err})"])
     else:
-        df = _read_excel_safe(latest)
+        df, err = _read_excel_safe_with_error(latest)
         if df is None:
-            return EtlResult(pd.DataFrame(), 1, 1, [f"REESTR: skip {latest.name} (cannot read)"])
+            details = f": {err}" if err else ""
+            return EtlResult(pd.DataFrame(), 1, 1, [f"REESTR: skip {latest.name} (cannot read{details})"])
     df["Source.Name"] = latest.name
     return EtlResult(df, 1, 0, errors)
 
