@@ -810,7 +810,8 @@ grid_response = AgGrid(
     df_grid,
     gridOptions=_grid_opts,
     update_mode=GridUpdateMode.MODEL_CHANGED,
-    update_on=["cellValueChanged", "cellEditingStopped"],
+    # Одного события достаточно: второй триггер давал лишний промежуточный rerun.
+    update_on=["cellValueChanged"],
     editable=True,
     fit_columns_on_grid_load=True,
     height=720,
@@ -879,5 +880,4 @@ if not edited_rows.empty:
             st.toast(f"Автосохранено: {len(changed_keys)} изменений")
         finally:
             conn.close()
-        st.session_state["grid_reset_counter"] = st.session_state.get("grid_reset_counter", 0) + 1
-        st.rerun()
+        # Не форсируем второй rerun: он давал заметный "двухэтапный" эффект при вводе.
