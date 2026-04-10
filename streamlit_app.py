@@ -174,6 +174,8 @@ with h3:
 row_filters = st.columns([1.75, 0.78])
 with row_filters[0]:
     include_inactive = st.checkbox("Показывать архивные (is_active=0)", value=False)
+    if not include_inactive:
+        st.caption("По умолчанию показаны только активные заявки.")
 with row_filters[1]:
     if st.button("Сбросить фильтры", type="secondary", use_container_width=True):
         st.session_state["pending_reset"] = True
@@ -226,6 +228,30 @@ if "inp_f" not in st.session_state:
     st.session_state["inp_f"] = st.session_state["date_range"][0]
 if "inp_t" not in st.session_state:
     st.session_state["inp_t"] = st.session_state["date_range"][1]
+
+
+def _clamp_session_date(value: object, fallback: object) -> object:
+    ts = pd.to_datetime(value, errors="coerce")
+    if pd.isna(ts):
+        ts = pd.to_datetime(fallback, errors="coerce")
+    if pd.isna(ts):
+        return min_date_all
+    d = ts.date()
+    if d < min_date_all:
+        return min_date_all
+    if d > max_date_all:
+        return max_date_all
+    return d
+
+
+_date_range_raw = st.session_state.get("date_range", (min_date_all, max_date_all))
+if not isinstance(_date_range_raw, (tuple, list)) or len(_date_range_raw) != 2:
+    _date_range_raw = (min_date_all, max_date_all)
+_dr0 = _clamp_session_date(_date_range_raw[0], min_date_all)
+_dr1 = _clamp_session_date(_date_range_raw[1], max_date_all)
+st.session_state["date_range"] = (min(_dr0, _dr1), max(_dr0, _dr1))
+st.session_state["inp_f"] = _clamp_session_date(st.session_state.get("inp_f"), st.session_state["date_range"][0])
+st.session_state["inp_t"] = _clamp_session_date(st.session_state.get("inp_t"), st.session_state["date_range"][1])
 
 
 def _sync_inputs_to_slider() -> None:
