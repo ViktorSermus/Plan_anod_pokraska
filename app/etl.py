@@ -622,6 +622,7 @@ def transform_master(znom_df: pd.DataFrame, reestr_df: pd.DataFrame) -> pd.DataF
     for col in needed:
         if col not in z.columns:
             z[col] = pd.NA
+    z["Дата заявки"] = pd.to_datetime(z["Дата заявки"], errors="coerce")
 
     grouped = (
         z.groupby(["Дата заявки", "№ заявки", "Наименование"], dropna=False, as_index=False)
@@ -642,6 +643,7 @@ def transform_master(znom_df: pd.DataFrame, reestr_df: pd.DataFrame) -> pd.DataF
         for col in ["№ заявки", "Дата заявки", "Наименование", "Перемещено", "Бронь под обр", "Обработано"]:
             if col not in r.columns:
                 r[col] = pd.NA
+        r["Дата заявки"] = pd.to_datetime(r["Дата заявки"], errors="coerce")
         r_small = r[["№ заявки", "Дата заявки", "Наименование", "Перемещено", "Бронь под обр", "Обработано"]].copy()
         merged = grouped.merge(r_small, how="left", on=["№ заявки", "Дата заявки", "Наименование"])
     else:
