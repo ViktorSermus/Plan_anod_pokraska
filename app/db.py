@@ -356,7 +356,11 @@ def fetch_all(conn: psycopg2.extensions.connection, include_inactive: bool = Fal
     if not include_inactive:
         q += " WHERE is_active = 1"
     q += " ORDER BY date_request DESC NULLS LAST, request_no ASC"
-    return pd.read_sql_query(q, conn)
+    df = pd.read_sql_query(q, conn)
+    if not df.empty and "note" in df.columns:
+        # NULL из БД → NaN в pandas; в Ag Grid это отображается как текст «NaN»
+        df["note"] = df["note"].fillna("")
+    return df
 
 
 def log_etl_import(

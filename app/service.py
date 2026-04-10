@@ -20,6 +20,35 @@ class RefreshStats:
     errors: list[str]
 
 
+def _db_rows_to_znom_input(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(
+            columns=[
+                "Дата заявки",
+                "№ заявки",
+                "Наименование",
+                "Кол-во м.п.",
+                "Хлысты",
+                "Услуга",
+                "Автор",
+                "Клиент",
+            ]
+        )
+    out = pd.DataFrame(
+        {
+            "Дата заявки": df.get("date_request"),
+            "№ заявки": df.get("request_no"),
+            "Наименование": df.get("item_name"),
+            "Кол-во м.п.": df.get("qty_mp"),
+            "Хлысты": df.get("qty_bars"),
+            "Услуга": df.get("service"),
+            "Автор": df.get("author"),
+            "Клиент": df.get("client"),
+        }
+    )
+    return out
+
+
 def refresh_from_uploads(
     database_url: str,
     znom_parts: list[tuple[bytes, str]],
@@ -36,12 +65,16 @@ def refresh_from_uploads(
     else:
         reestr_res = EtlResult(pd.DataFrame(), 0, 0, [])
 
-    master = transform_master(znom.dataframe, reestr_res.dataframe)
-
     conn = connect(database_url, supabase_pooler_region=supabase_pooler_region)
     try:
         init_db(conn)
-        up = upsert_master(conn, master, archive_missing=archive_missing)
+        znom_source = znom.dataframe
+        if znom_source.empty and not reestr_res.dataframe.empty:
+            existing_active = fetch_all(conn, include_inactive=False)
+            znom_source = _db_rows_to_znom_input(existing_active)
+
+        master = transform_master(znom_source, reestr_res.dataframe)
+        up = upsert_master(conn, master, archive_missing=archive_missing and not znom.dataframe.empty)
         stats = RefreshStats(
             znom_files_read=znom.files_read,
             znom_files_failed=znom.files_failed,

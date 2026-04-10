@@ -141,10 +141,10 @@ with h3:
     st.write("")
     st.write("")
     if st.button("Загрузить в базу", type="primary", use_container_width=True):
-        if not znom_uploads:
-            st.warning("Выберите хотя бы один файл заявок.")
+        if not znom_uploads and not reestr_upload:
+            st.warning("Выберите хотя бы один файл: заявки или реестр.")
         else:
-            parts = [(f.getvalue(), f.name) for f in znom_uploads]
+            parts = [(f.getvalue(), f.name) for f in znom_uploads] if znom_uploads else []
             reestr_tuple = (reestr_upload.getvalue(), reestr_upload.name) if reestr_upload else None
             try:
                 stats = refresh_from_uploads(
@@ -499,6 +499,7 @@ note_col = "ПР."
 key_col = "_key"
 
 df_grid = grid.copy()
+df_grid[note_col] = df_grid[note_col].fillna("")
 df_grid[exported_col] = pd.to_numeric(df_grid[exported_col], errors="coerce")
 df_grid[corr_col] = pd.to_numeric(df_grid[corr_col], errors="coerce")
 
