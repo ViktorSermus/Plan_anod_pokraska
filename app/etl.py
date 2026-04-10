@@ -29,6 +29,14 @@ def _decode_mojibake(v: object) -> object:
         return v
 
 
+def _map_dataframe_cells(df: pd.DataFrame, func) -> pd.DataFrame:
+    """Совместимость с pandas 2/3: applymap удалён, используем DataFrame.map если доступен."""
+    mapper = getattr(df, "map", None)
+    if callable(mapper):
+        return mapper(func)
+    return df.applymap(func)
+
+
 def _extract_client_from_note(cell: object) -> str | None:
     """
     Ячейка с текстом «Примечания: <клиент>_<...>» — клиент не содержит «_».
@@ -323,7 +331,7 @@ def read_excel_bytes(data: bytes, name: str) -> pd.DataFrame | None:
 
 def _parse_legacy_znom_xls(raw: pd.DataFrame) -> pd.DataFrame:
     # Decode cp1251 text which may be exposed as latin1 mojibake.
-    txt = raw.copy().applymap(_decode_mojibake)
+    txt = _map_dataframe_cells(raw.copy(), _decode_mojibake)
 
     header_idx: int | None = None
     for i in range(min(len(txt), 40)):
@@ -528,7 +536,7 @@ def load_latest_reestr(folder: Path, patterns: list[str]) -> EtlResult:
 
 
 def _parse_legacy_reestr_xls(raw: pd.DataFrame) -> pd.DataFrame:
-    txt = raw.copy().applymap(_decode_mojibake)
+    txt = _map_dataframe_cells(raw.copy(), _decode_mojibake)
     rows: list[dict[str, object]] = []
 
     current_no: str | None = None
