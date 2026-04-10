@@ -301,7 +301,7 @@ def _read_excel_safe_with_error(path: Path) -> tuple[pd.DataFrame | None, str | 
     try:
         if path.suffix.lower() == ".xls":
             raw = _read_legacy_excel_bytes_as_raw(path.read_bytes())
-            return _parse_legacy_znom_xls(raw)
+            return _parse_legacy_znom_xls(raw), None
         return pd.read_excel(path, engine="openpyxl"), None
     except Exception as exc:
         return None, _format_read_error(exc)
@@ -318,7 +318,7 @@ def read_excel_bytes_with_error(data: bytes, name: str) -> tuple[pd.DataFrame | 
     try:
         if suffix == ".xls":
             raw = _read_legacy_excel_bytes_as_raw(data)
-            return _parse_legacy_znom_xls(raw)
+            return _parse_legacy_znom_xls(raw), None
         return pd.read_excel(BytesIO(data), engine="openpyxl"), None
     except Exception as exc:
         return None, _format_read_error(exc)
