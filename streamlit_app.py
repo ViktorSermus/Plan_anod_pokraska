@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import math
 
 import pandas as pd
 import streamlit as st
@@ -18,7 +17,6 @@ from app.supabase_auth import (
     render_login_page,
     restore_session,
 )
-from app.etl import build_business_key
 from app.status import add_status_column
 
 
@@ -582,46 +580,14 @@ _rem = pd.to_numeric(df_grid[remaining_col], errors="coerce")
 df_grid["rem_full"] = (_rem.notna() & (_rem <= 0)).astype(int)
 
 
-def _norm_request_no_for_key(v: object) -> str:
-    """Совпадает с логикой ETL (zfill): AgGrid часто отдаёт № как int/float вместо строки с ведущими нулями."""
-    if pd.isna(v):
-        return ""
-    s = str(v).strip()
-    # Нельзя float("000000632") — получится 632000; для целых заявок — int по строке
-    if s.isdigit():
-        try:
-            return str(int(s)).zfill(9)
-        except ValueError:
-            pass
-    try:
-        n = float(s.replace(",", "."))
-        if math.isfinite(n) and n == int(n):
-            return str(int(n)).zfill(9)
-    except (ValueError, OverflowError):
-        pass
-    return s
-
-
-def _business_key_from_row_row(row: pd.Series) -> str:
-    # Пересчёт ключа, если в строке грида нет _key (AgGrid мог выкинуть скрытое поле).
-    tmp = pd.DataFrame(
-        {
-            "№ заявки": [_norm_request_no_for_key(row.get("№"))],
-            "Дата заявки": [row.get("Дата")],
-            "Наименование": [row.get("Наим.")],
-        }
-    )
-    return build_business_key(tmp).iloc[0]
-
-
-def _row_business_key(row: pd.Series) -> str:
-    """Предпочитаем business_key из БД (_key), чтобы не ломалось из‑за формата №/даты в ответе грида."""
+def _row_business_key(row: pd.Series) -> str | None:
+    """Сохраняем только по ключу из БД: display-значения в гриде могут быть преобразованы для UI."""
     raw = row.get(key_col)
     if raw is not None and not (isinstance(raw, float) and pd.isna(raw)):
         s = str(raw).strip()
         if s:
             return s
-    return _business_key_from_row_row(row)
+    return None
 
 
 def _exported_vals_differ(a: float | None, b: float | None) -> bool:
@@ -656,12 +622,17 @@ def _note_vals_differ(a: str | None, b: str | None) -> bool:
 baseline_map: dict[str, tuple[float | None, float | None, str | None]] = {}
 for _, r in df_grid.iterrows():
     k = _row_business_key(r)
+    if not k:
+        continue
     baseline_map[k] = (
         _to_opt_float(r.get(exported_col)),
         _to_opt_float(r.get(corr_col)),
         _to_opt_str(r.get(note_col)),
     )
 st.session_state["exported_baseline_map"] = baseline_map
+_pending_grid_save_toast = st.session_state.pop("grid_save_toast", None)
+if _pending_grid_save_toast:
+    st.toast(_pending_grid_save_toast)
 
 st.caption(_FILTERS_CAPTION)
 
@@ -841,6 +812,18 @@ function (params) {
 )
 gb.configure_grid_options(getRowStyle=_row_style_js)
 gb.configure_grid_options(tooltipShowDelay=200)
+gb.configure_grid_options(
+    getRowId=JsCode(
+        f"""
+function(params) {{
+    var row = params && params.data ? params.data : null;
+    var key = row ? row["{key_col}"] : null;
+    if (key == null || key === "") return undefined;
+    return String(key);
+}}
+"""
+    )
+)
 
 _grid_opts = gb.build()
 
@@ -852,8 +835,8 @@ grid_key = (
 grid_response = AgGrid(
     df_grid,
     gridOptions=_grid_opts,
-    update_mode=GridUpdateMode.MODEL_CHANGED,
-    # Одного события достаточно: второй триггер давал лишний промежуточный rerun.
+    update_mode=GridUpdateMode.NO_UPDATE,
+    # Обновляем сервер только по завершенному редактированию ячейки.
     update_on=["cellValueChanged"],
     editable=True,
     fit_columns_on_grid_load=True,
@@ -879,13 +862,15 @@ else:
     edited_rows = pd.DataFrame(_edited)
 if not edited_rows.empty:
     baseline = st.session_state.get("exported_baseline_map", {})
+    last_save_signature = st.session_state.get("last_grid_save_signature")
 
     changed_keys: list[str] = []
     new_values: dict[str, tuple[float | None, float | None, str | None]] = {}
+    missing_key_rows = 0
     for _, row in edited_rows.iterrows():
-        try:
-            k = _row_business_key(row)
-        except Exception:
+        k = _row_business_key(row)
+        if not k:
+            missing_key_rows += 1
             continue
         new_exp = _to_opt_float(row.get(exported_col))
         new_corr = _to_opt_float(row.get(corr_col))
@@ -898,6 +883,16 @@ if not edited_rows.empty:
         ):
             changed_keys.append(k)
             new_values[k] = (new_exp, new_corr, new_note)
+
+    if missing_key_rows:
+        st.error("Не удалось определить ключ строки для части изменений. Обновите страницу и повторите ввод.")
+
+    if changed_keys:
+        save_signature = hashlib.md5(
+            repr(sorted((k, new_values[k]) for k in changed_keys)).encode("utf-8")
+        ).hexdigest()
+        if save_signature == last_save_signature:
+            changed_keys = []
 
     if changed_keys:
         conn = connect(
@@ -917,10 +912,10 @@ if not edited_rows.empty:
                     actor_user_id=user.get("id"),
                     actor_email=user.get("email") or None,
                 )
-            # Update baseline after successful save.
             for k in changed_keys:
                 baseline[k] = new_values[k]
-            st.toast(f"Автосохранено: {len(changed_keys)} изменений")
+            st.session_state["last_grid_save_signature"] = save_signature
+            st.session_state["grid_save_toast"] = f"Автосохранено: {len(changed_keys)} изменений"
         finally:
             conn.close()
-        # Не форсируем второй rerun: он давал заметный "двухэтапный" эффект при вводе.
+        st.rerun()

@@ -85,11 +85,30 @@ def _norm_text(v: object) -> str:
     return str(v).strip().lower()
 
 
+def _parse_request_date_value(value: object) -> pd.Timestamp:
+    if pd.isna(value):
+        return pd.NaT
+    s = str(value).strip()
+    if not s:
+        return pd.NaT
+    if re.fullmatch(r"\d{1,2}\.\d{1,2}\.\d{2,4}", s):
+        return pd.to_datetime(s, errors="coerce", dayfirst=True)
+    parsed = pd.to_datetime(s, errors="coerce")
+    if pd.isna(parsed):
+        parsed = pd.to_datetime(s, errors="coerce", dayfirst=True)
+    return parsed
+
+
+def _format_request_date(value: object) -> str:
+    ts = _parse_request_date_value(value)
+    return str(ts.date()) if pd.notna(ts) else ""
+
+
 def build_business_key(df: pd.DataFrame) -> pd.Series:
     parts = (
         df["№ заявки"].map(_norm_text)
         + "|"
-        + df["Дата заявки"].map(lambda x: str(pd.to_datetime(x, errors="coerce").date()) if not pd.isna(x) else "")
+        + df["Дата заявки"].map(_format_request_date)
         + "|"
         + df["Наименование"].map(_norm_text)
     )
@@ -622,7 +641,7 @@ def transform_master(znom_df: pd.DataFrame, reestr_df: pd.DataFrame) -> pd.DataF
     for col in needed:
         if col not in z.columns:
             z[col] = pd.NA
-    z["Дата заявки"] = pd.to_datetime(z["Дата заявки"], errors="coerce")
+    z["Дата заявки"] = z["Дата заявки"].map(_parse_request_date_value)
 
     grouped = (
         z.groupby(["Дата заявки", "№ заявки", "Наименование"], dropna=False, as_index=False)
@@ -643,7 +662,7 @@ def transform_master(znom_df: pd.DataFrame, reestr_df: pd.DataFrame) -> pd.DataF
         for col in ["№ заявки", "Дата заявки", "Наименование", "Перемещено", "Бронь под обр", "Обработано"]:
             if col not in r.columns:
                 r[col] = pd.NA
-        r["Дата заявки"] = pd.to_datetime(r["Дата заявки"], errors="coerce")
+        r["Дата заявки"] = r["Дата заявки"].map(_parse_request_date_value)
         r_small = r[["№ заявки", "Дата заявки", "Наименование", "Перемещено", "Бронь под обр", "Обработано"]].copy()
         merged = grouped.merge(r_small, how="left", on=["№ заявки", "Дата заявки", "Наименование"])
     else:

@@ -49,6 +49,23 @@ TABLE = "master_data"
 AUDIT_TABLE = "audit_log"
 
 
+def _format_request_date(value: Any) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    if re.fullmatch(r"\d{1,2}\.\d{1,2}\.\d{2,4}", s):
+        parsed = pd.to_datetime(s, errors="coerce", dayfirst=True)
+    else:
+        parsed = pd.to_datetime(s, errors="coerce")
+        if pd.isna(parsed):
+            parsed = pd.to_datetime(s, errors="coerce", dayfirst=True)
+    if pd.isna(parsed):
+        return None
+    return str(parsed.date())
+
+
 def _normalize_note_value(value: Any) -> str | None:
     if value is None or pd.isna(value):
         return None
@@ -203,8 +220,9 @@ def upsert_master(conn: psycopg2.extensions.connection, df: pd.DataFrame, archiv
                 added += 1
 
             remaining = r["Кол-во хлыстов обработанных"] if pd.notna(r["Кол-во хлыстов обработанных"]) else None
-            if remaining is not None and exported is not None:
-                remaining = float(remaining) - float(exported)
+            exp_total = _effective_export_total(exported, correction)
+            if remaining is not None and exp_total is not None:
+                remaining = float(remaining) - exp_total
 
             cur.execute(
                 f"""
@@ -230,15 +248,19 @@ def upsert_master(conn: psycopg2.extensions.connection, df: pd.DataFrame, archiv
                     correction = COALESCE({TABLE}.correction, EXCLUDED.correction),
                     note = COALESCE({TABLE}.note, EXCLUDED.note),
                     remaining = CASE
-                        WHEN COALESCE({TABLE}.exported, EXCLUDED.exported) IS NULL THEN EXCLUDED.processed_bars
-                        ELSE EXCLUDED.processed_bars - COALESCE({TABLE}.exported, EXCLUDED.exported)
+                        WHEN EXCLUDED.processed_bars IS NULL THEN NULL
+                        WHEN COALESCE({TABLE}.exported, EXCLUDED.exported) IS NULL
+                             AND COALESCE({TABLE}.correction, EXCLUDED.correction) IS NULL THEN EXCLUDED.processed_bars
+                        ELSE EXCLUDED.processed_bars
+                             - COALESCE({TABLE}.exported, EXCLUDED.exported, 0)
+                             - COALESCE({TABLE}.correction, EXCLUDED.correction, 0)
                     END,
                     is_active = 1,
                     updated_at = NOW()
                 """,
                 (
                     r["business_key"],
-                    str(pd.to_datetime(r["Дата заявки"], errors="coerce").date()) if pd.notna(r["Дата заявки"]) else None,
+                    _format_request_date(r["Дата заявки"]),
                     r["№ заявки"],
                     r["Наименование"],
                     None if pd.isna(r.get("Услуга", pd.NA)) else str(r.get("Услуга")),
@@ -281,6 +303,17 @@ def _float_differs(a: float | None, b: float | None) -> bool:
     return abs(float(a) - float(b)) > 1e-9
 
 
+def _effective_export_total(exported: float | None, correction: float | None) -> float | None:
+    if exported is None and correction is None:
+        return None
+    total = 0.0
+    if exported is not None:
+        total += float(exported)
+    if correction is not None:
+        total += float(correction)
+    return total
+
+
 def set_export_fields(
     conn: psycopg2.extensions.connection,
     business_key: str,
@@ -310,13 +343,14 @@ def set_export_fields(
                 correction = %s,
                 note = %s,
                 remaining = CASE
-                    WHEN processed_bars IS NULL OR %s IS NULL THEN processed_bars
-                    ELSE processed_bars - %s
+                    WHEN processed_bars IS NULL THEN NULL
+                    WHEN %s IS NULL AND %s IS NULL THEN processed_bars
+                    ELSE processed_bars - COALESCE(%s, 0) - COALESCE(%s, 0)
                 END,
                 updated_at = NOW()
             WHERE business_key = %s
             """,
-            (exported, correction, note, exported, exported, business_key),
+            (exported, correction, note, exported, correction, exported, correction, business_key),
         )
 
         if _float_differs(
