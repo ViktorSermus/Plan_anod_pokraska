@@ -4,7 +4,7 @@ import hashlib
 
 import pandas as pd
 import streamlit as st
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
+from st_aggrid import AgGrid, DataReturnMode, GridOptionsBuilder, GridUpdateMode, JsCode
 
 from app.db import connect, init_db, set_export_fields
 from app.service import get_grid_data, refresh_from_uploads
@@ -618,6 +618,18 @@ def _note_vals_differ(a: str | None, b: str | None) -> bool:
     return (a or "") != (b or "")
 
 
+def _grid_return_data(grid_response: object) -> object:
+    if isinstance(grid_response, dict):
+        return grid_response.get("data")
+    data = getattr(grid_response, "data", None)
+    if data is not None:
+        return data
+    try:
+        return grid_response["data"]  # type: ignore[index]
+    except Exception:
+        return None
+
+
 # Baseline: current editable values at the time of grid render (ключ = business_key из _key).
 baseline_map: dict[str, tuple[float | None, float | None, str | None]] = {}
 for _, r in df_grid.iterrows():
@@ -837,6 +849,7 @@ grid_response = AgGrid(
     gridOptions=_grid_opts,
     # Возвращаем данные только при изменении значения ячейки, без широкого MODEL_CHANGED.
     update_mode=GridUpdateMode.VALUE_CHANGED,
+    data_return_mode=DataReturnMode.AS_INPUT,
     editable=True,
     fit_columns_on_grid_load=True,
     height=720,
@@ -851,8 +864,8 @@ grid_response = AgGrid(
     allow_unsafe_jscode=True,
 )
 
-# Свойство .data — актуальные строки грида (в т.ч. после правок)
-_edited = grid_response.data
+# Актуальные строки грида (в т.ч. после правок) в разных версиях приходят либо как dict["data"], либо как .data
+_edited = _grid_return_data(grid_response)
 if _edited is None:
     edited_rows = pd.DataFrame()
 elif isinstance(_edited, pd.DataFrame):
