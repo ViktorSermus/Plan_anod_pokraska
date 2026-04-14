@@ -13,7 +13,6 @@ from app.supabase_auth import (
     build_supabase_client,
     current_user,
     logout,
-    process_oauth_redirect,
     render_login_page,
     restore_session,
 )
@@ -107,8 +106,6 @@ except Exception as e:
     st.stop()
 
 supabase = build_supabase_client(settings.supabase_url, settings.supabase_anon_key)
-if process_oauth_redirect(supabase):
-    st.stop()
 restore_session(supabase)
 user = current_user()
 if not user:
@@ -838,12 +835,13 @@ for _num_col, _w in (
             cellStyle={"textAlign": "right"},
         )
 
-# Editable only "Вывезено"
-gb.configure_column(exported_col, editable=True)
-gb.configure_column(corr_col, editable=True, tooltipField=note_col)
+# Editable columns are highlighted in the header to make them easier to spot.
+gb.configure_column(exported_col, editable=True, headerClass="editable-header")
+gb.configure_column(corr_col, editable=True, tooltipField=note_col, headerClass="editable-header")
 gb.configure_column(
     note_col,
     editable=True,
+    headerClass="editable-header",
     width=42,
     minWidth=36,
     maxWidth=52,
@@ -909,6 +907,7 @@ grid_response = AgGrid(
     custom_css={
         ".ag-cell": {"border-right": "1px solid #d0d7de"},
         ".ag-header-cell": {"border-right": "1px solid #b8c0c9"},
+        ".ag-header-cell.editable-header": {"background-color": "#fff7cc"},
     },
     # Иначе после st.rerun() грид держит старые правки и не подставляет данные с сервера (статус, БД).
     server_sync_strategy="server_wins",

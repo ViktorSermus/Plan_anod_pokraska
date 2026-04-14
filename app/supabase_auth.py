@@ -74,37 +74,8 @@ def current_user() -> dict[str, str] | None:
     }
 
 
-def process_oauth_redirect(supabase: Client) -> bool:
-    """Обмен `?code=` на сессию. Возвращает True, если сделан rerun (остановить дальнейшую отрисовку)."""
-    code = st.query_params.get("code")
-    if not code:
-        return False
-    err: str | None = None
-    try:
-        resp = supabase.auth.exchange_code_for_session({"auth_code": code})
-        sess = getattr(resp, "session", None)
-        usr = getattr(resp, "user", None)
-        if sess:
-            _persist_session_from_response(sess, usr)
-        else:
-            err = "Сервер не вернул сессию"
-    except Exception as e:
-        err = str(e)
-    try:
-        for k in list(st.query_params.keys()):
-            del st.query_params[k]
-    except Exception:
-        pass
-    if err:
-        st.error(f"Не удалось завершить вход Google: {err}")
-        return False
-    st.rerun()
-    return True
-
-
-def render_login_page(supabase: Client, app_base_url: str) -> None:
+def render_login_page(supabase: Client, _app_base_url: str) -> None:
     st.subheader("Вход")
-    redirect_to = app_base_url.rstrip("/") + "/"
 
     with st.form("email_login"):
         email = st.text_input("Email")
@@ -125,22 +96,6 @@ def render_login_page(supabase: Client, app_base_url: str) -> None:
                         st.error("Сервер не вернул сессию")
                 except Exception as e:
                     st.error(str(e))
-
-    try:
-        oauth = supabase.auth.sign_in_with_oauth(
-            {
-                "provider": "google",
-                "options": {
-                    "redirect_to": redirect_to,
-                    "skip_browser_redirect": True,
-                },
-            }
-        )
-        url = getattr(oauth, "url", None)
-        if url:
-            st.link_button("Войти через Google", url, use_container_width=True)
-    except Exception as e:
-        st.caption(f"Google: настройте провайдера в Supabase. ({e})")
 
 
 def logout(supabase: Client) -> None:
