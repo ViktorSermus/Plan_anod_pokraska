@@ -163,6 +163,7 @@ with h3:
                 # ломает отрисовку или скрывает все колонки.
                 st.session_state.pop("aggrid_columns_state", None)
                 st.session_state.pop("aggrid_grid_state", None)
+                st.session_state["data_refresh_counter"] = st.session_state.get("data_refresh_counter", 0) + 1
                 st.session_state["grid_reset_counter"] = st.session_state.get("grid_reset_counter", 0) + 1
                 for e in stats.errors:
                     st.warning(e)
@@ -180,11 +181,19 @@ with row_filters[1]:
         st.session_state["grid_reset_counter"] = st.session_state.get("grid_reset_counter", 0) + 1
         st.rerun()
 
-df = get_grid_data(
-    settings.database_url,
-    include_inactive=include_inactive,
-    supabase_pooler_region=settings.supabase_pooler_region,
-)
+if "data_refresh_counter" not in st.session_state:
+    st.session_state["data_refresh_counter"] = 0
+
+_data_cache_sig = (include_inactive, st.session_state["data_refresh_counter"])
+if st.session_state.get("grid_data_cache_sig") != _data_cache_sig:
+    st.session_state["grid_data_cache"] = get_grid_data(
+        settings.database_url,
+        include_inactive=include_inactive,
+        supabase_pooler_region=settings.supabase_pooler_region,
+    )
+    st.session_state["grid_data_cache_sig"] = _data_cache_sig
+
+df = st.session_state["grid_data_cache"].copy()
 
 if df.empty:
     st.info("База пуста. Загрузите файлы заявок (и при необходимости реестр), затем нажмите «Загрузить в базу».")
@@ -618,6 +627,46 @@ def _note_vals_differ(a: str | None, b: str | None) -> bool:
     return (a or "") != (b or "")
 
 
+def _effective_export_total(exported: float | None, correction: float | None) -> float | None:
+    if exported is None and correction is None:
+        return None
+    total = 0.0
+    if exported is not None:
+        total += float(exported)
+    if correction is not None:
+        total += float(correction)
+    return total
+
+
+def _calc_remaining_value(processed_bars: object, exported: float | None, correction: float | None) -> float | None:
+    pb = _to_opt_float(processed_bars)
+    if pb is None:
+        return None
+    exp_total = _effective_export_total(exported, correction)
+    if exp_total is None:
+        return pb
+    return pb - exp_total
+
+
+def _apply_saved_values_to_cache(
+    business_key: str,
+    exported: float | None,
+    correction: float | None,
+    note: str | None,
+) -> None:
+    cache_df = st.session_state.get("grid_data_cache")
+    if not isinstance(cache_df, pd.DataFrame) or cache_df.empty or "business_key" not in cache_df.columns:
+        return
+    mask = cache_df["business_key"].astype(str) == str(business_key)
+    if not mask.any():
+        return
+    row_idx = cache_df.index[mask][0]
+    cache_df.at[row_idx, "exported"] = exported
+    cache_df.at[row_idx, "correction"] = correction
+    cache_df.at[row_idx, "note"] = note or ""
+    cache_df.at[row_idx, "remaining"] = _calc_remaining_value(cache_df.at[row_idx, "processed_bars"], exported, correction)
+
+
 def _grid_return_data(grid_response: object) -> object:
     if isinstance(grid_response, dict):
         return grid_response.get("data")
@@ -838,6 +887,7 @@ function(params) {{
 )
 
 _grid_opts = gb.build()
+_reload_grid_once = bool(st.session_state.pop("grid_reload_once", False))
 
 grid_key = (
     f"grid_{st.session_state['grid_reset_counter']}_{date_from}_{date_to}"
@@ -852,6 +902,7 @@ grid_response = AgGrid(
     data_return_mode=DataReturnMode.AS_INPUT,
     editable=True,
     fit_columns_on_grid_load=True,
+    reload_data=_reload_grid_once,
     height=720,
     key=grid_key,
     theme="light",
@@ -925,10 +976,12 @@ if not edited_rows.empty:
                     actor_email=user.get("email") or None,
                 )
             for k in changed_keys:
+                exp_v, corr_v, note_v = new_values[k]
+                _apply_saved_values_to_cache(k, exp_v, corr_v, note_v)
                 baseline[k] = new_values[k]
             st.session_state["last_grid_save_signature"] = save_signature
             st.session_state["grid_save_toast"] = f"Автосохранено: {len(changed_keys)} изменений"
-            st.session_state["grid_reset_counter"] = st.session_state.get("grid_reset_counter", 0) + 1
+            st.session_state["grid_reload_once"] = True
         finally:
             conn.close()
         st.rerun()
