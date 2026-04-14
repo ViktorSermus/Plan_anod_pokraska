@@ -915,6 +915,7 @@ if not edited_rows.empty:
                 baseline[k] = new_values[k]
             st.session_state["last_grid_save_signature"] = save_signature
             st.session_state["grid_save_toast"] = f"Автосохранено: {len(changed_keys)} изменений"
+            st.session_state["grid_reset_counter"] = st.session_state.get("grid_reset_counter", 0) + 1
         finally:
             conn.close()
         st.rerun()
