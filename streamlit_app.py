@@ -835,9 +835,8 @@ grid_key = (
 grid_response = AgGrid(
     df_grid,
     gridOptions=_grid_opts,
-    update_mode=GridUpdateMode.NO_UPDATE,
-    # Обновляем сервер только по завершенному редактированию ячейки.
-    update_on=["cellValueChanged"],
+    # Возвращаем данные только при изменении значения ячейки, без широкого MODEL_CHANGED.
+    update_mode=GridUpdateMode.VALUE_CHANGED,
     editable=True,
     fit_columns_on_grid_load=True,
     height=720,
