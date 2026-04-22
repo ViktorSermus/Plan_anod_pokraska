@@ -353,14 +353,19 @@ with row_d[1]:
         on_change=_sync_inputs_to_slider,
     )
 with row_d[2]:
-    st.slider(
-        "Период",
-        min_value=min_date_all,
-        max_value=max_date_all,
-        key="date_range",
-        format="DD.MM.YYYY",
-        on_change=_sync_slider_to_inputs,
-    )
+    if min_date_all < max_date_all:
+        st.slider(
+            "Период",
+            min_value=min_date_all,
+            max_value=max_date_all,
+            key="date_range",
+            format="DD.MM.YYYY",
+            on_change=_sync_slider_to_inputs,
+        )
+    else:
+        # Streamlit range-slider требует min_value < max_value.
+        st.session_state["date_range"] = (min_date_all, max_date_all)
+        st.caption("В данных доступна только одна дата.")
 
 ex1, ex2, ex3 = st.columns(3)
 with ex1:
